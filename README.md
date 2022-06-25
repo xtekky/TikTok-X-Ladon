@@ -1,2 +1,1 @@
-# TikTok-X-Ladon
-TikTok X-Ladon Signature
+contact: [t.me/xtekky](https://t.me/xtekky)
