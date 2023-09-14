@@ -1,118 +1,126 @@
+from signer.lib.pkcs7_padding import pkcs7_padding_pad_buffer, padding_size
 import base64
-import binascii
 import hashlib
-import time
+import ctypes
+from os import urandom
+
+def md5bytes(data: bytes) -> str:
+    m = hashlib.md5()
+    m.update(data)
+    return m.hexdigest()
 
 
-def aid_random_md5(buffer):
-    return hashlib.md5(buffer).digest()
+def get_type_data(ptr, index, data_type):
+    if data_type == "uint64_t":
+        return int.from_bytes(ptr[index * 8 : (index + 1) * 8], "little")
+    else:
+        raise ValueError("Invalid data type")
 
 
-def ror(x, v):
-    a = (x << (64 - v)) | (x >> v)
-    return a & 0xffffffffffffffff
-
-
-def ror_plus(v, shift, x9):
-    a = (x9 << (64 - shift)) | (x9 >> shift)
-    return (a ^ v) & 0xffffffffffffffff
+def set_type_data(ptr, index, data, data_type):
+    if data_type == "uint64_t":
+        ptr[index * 8 : (index + 1) * 8] = data.to_bytes(8, "little")
+    else:
+        raise ValueError("Invalid data type")
 
 
 def validate(num):
-    return num & 0xffffffffffffffff
+    return num & 0xFFFFFFFFFFFFFFFF
 
 
-def ladon_calc_1(x8, x9, x22):
-    x8 = ror(x8, 0x4)
-    x8 = (x8 - x9) ^ x22
-    res_1 = x8
-    res_2 = ror_plus(x8, 49, x9)
-    return res_1, res_2
+def __ROR__(value: ctypes.c_ulonglong, count: int) -> ctypes.c_ulonglong:
+    nbits = ctypes.sizeof(value) * 8
+    count %= nbits
+    low = ctypes.c_ulonglong(value.value << (nbits - count)).value
+    value = ctypes.c_ulonglong(value.value >> count).value
+    value = value | low
+    return value
 
 
-class XLadon:
+def encrypt_ladon_input(hash_table, input_data):
+    data0 = int.from_bytes(input_data[:8], byteorder="little")
+    data1 = int.from_bytes(input_data[8:], byteorder="little")
 
-    def __init__(self, xk, aid):
-        self.make_sig(xk, aid)
+    for i in range(0x22):
+        hash = int.from_bytes(hash_table[i * 8 : (i + 1) * 8], byteorder="little")
+        data1 = validate(hash ^ (data0 + ((data1 >> 8) | (data1 << (64 - 8)))))
+        data0 = validate(data1 ^ ((data0 >> 0x3D) | (data0 << (64 - 0x3D))))
 
-    def ladon_2(self, md5_1):
-        ror_3d = self.x_2
-        x9 = ror(self.r_2, 0x8)
-        x8_x9 = ror_3d - x9
-        reset_value = x8_x9 ^ md5_1
-        for l_value in self.l_value_list:
-            ror_x9 = validate(ror(ror_3d, 0x3f))
-            ror_3d = validate(reset_value ^ ror_x9)
-            x8_ror = validate(ror(reset_value, 0x9))
-            and_res = validate(x8_ror + ror_3d)
-            reset_value = validate(and_res * l_value)
-        x_ladon4 = reset_value
-        x_ladon3_ror_3d = validate(ror(ror_3d, 0x3d))
-        xladon_3 = validate(x_ladon4 ^ x_ladon3_ror_3d)
-        return xladon_3, x_ladon4
+    output_data = bytearray(26)
+    output_data[:8] = data0.to_bytes(8, byteorder="little")
+    output_data[8:] = data1.to_bytes(8, byteorder="little")
 
-    def ladon_1(self, md5_1):
-        ror_3d = self.x_1
-        x9 = ror(self.r_1, 0x8)  
-        x8_x9 = ror_3d + x9
-        reset_value = x8_x9 ^ md5_1
-        for l_value in self.l_value_list:
-            ror_x9 = validate(ror(ror_3d, 0x3f))
-            ror_3d = validate(reset_value ^ ror_x9)
-            x8_ror = validate(ror(reset_value, 0x4))
-            and_res = validate(x8_ror - ror_3d)
-            reset_value = validate(and_res ^ l_value)
-        x_ladon4 = reset_value
-        x_ladon3_ror_3d = validate(ror(ror_3d, 0x3c))
-        xladon_3 = validate(x_ladon4 * x_ladon3_ror_3d)
-        return xladon_3, x_ladon4
+    return bytes(output_data)
 
-    def make_value_list(self, md5_value):
 
-        a = binascii.hexlify(md5_value[0:4])
-        md5_1 = int.from_bytes(a, byteorder='little')
-        a = binascii.hexlify(md5_value[4:8])
-        md5_2 = int.from_bytes(a, byteorder='little')
-        a = binascii.hexlify(md5_value[8:12])
-        md5_3 = int.from_bytes(a, byteorder='little')
-        a = binascii.hexlify(md5_value[12:16])
-        md5_4 = int.from_bytes(a, byteorder='little')
-        r0_list = [md5_2, md5_3, md5_4]
-        l0_list = [md5_1]
-        for i in range(0, 33):
-            r_value, l_vaue = ladon_calc_1(r0_list[i], l0_list[i], i)
-            l0_list.append(validate(l_vaue))
-            r0_list.append(validate(r_value))
+def encrypt_ladon(md5hex: bytes, data: bytes, size: int):
+    hash_table = bytearray(272 + 16)
+    hash_table[:32] = md5hex
 
-        self.l_value_list = l0_list[1:]
+    temp = []
+    for i in range(4):
+        temp.append(int.from_bytes(hash_table[i * 8 : (i + 1) * 8], byteorder="little"))
 
-    def make_sig(self, x_khons, aid="1128"):
-        signature_string = f"{x_khons}-1588093228-{aid}"
-        fill_number = 32 - len(list(signature_string.encode()))
+    buffer_b0 = temp[0]
+    buffer_b8 = temp[1]
+    temp.pop(0)
+    temp.pop(0)
 
-        buffer_list = list(signature_string.encode())
-        for i in range(fill_number):
-            buffer_list.append(fill_number)
-        full_buffer = bytearray(buffer_list)
-        self.x_1 = int.from_bytes(full_buffer[0:4], byteorder='little')
-        self.r_1 = int.from_bytes(full_buffer[8:9], byteorder='little')
-        self.x_2 = int.from_bytes(full_buffer[16:24], byteorder='little')
-        self.r_2 = int.from_bytes(full_buffer[24:32], byteorder='little')
+    for i in range(0, 0x22):
+        x9 = buffer_b0
+        x8 = buffer_b8
+        x8 = validate(__ROR__(ctypes.c_ulonglong(x8), 8))
+        x8 = validate(x8 + x9)
+        x8 = validate(x8 ^ i)
+        temp.append(x8)
+        x8 = validate(x8 ^ __ROR__(ctypes.c_ulonglong(x9), 61))
+        set_type_data(hash_table, i + 1, x8, "uint64_t")
+        buffer_b0 = x8
+        buffer_b8 = temp[0]
+        temp.pop(0)
+
+    new_size = padding_size(size)
+
+    input = bytearray(new_size)
+    input[:size] = data
+    pkcs7_padding_pad_buffer(input, size, new_size, 16)
+
+    output = bytearray(new_size)
+    for i in range(new_size // 16):
+        output[i * 16 : (i + 1) * 16] = encrypt_ladon_input(
+            hash_table, input[i * 16 : (i + 1) * 16]
+        )
+
+    return output
+
+
+def ladon_encrypt(
+    khronos      : int,
+    lc_id        : int   = 1611921764,
+    aid          : int   = 1233,
+    random_bytes : bytes = urandom(4)) -> str:
+    
+    data       = f"{khronos}-{lc_id}-{aid}"
+
+    keygen     = random_bytes + str(aid).encode()
+    md5hex     = md5bytes(keygen)
+
+    size       = len(data)
+    new_size   = padding_size(size)
+
+    output     = bytearray(new_size + 4)
+    output[:4] = random_bytes
+
+    output[4:] = encrypt_ladon(md5hex.encode(), data.encode(), size)
+
+    return base64.b64encode(bytes(output)).decode()
+
+
+class Ladon:
+    @staticmethod
+    def encrypt(x_khronos: int, lc_id: str, aid: int) -> str:
+        return ladon_encrypt(x_khronos, lc_id, aid)
 
 
 if __name__ == "__main__":
-    x_khons = str(int(time.time()))
-    aid = "1233"
-    xladon = XLadon(x_khons, aid)
-    random_bytes = bytes.fromhex("69 ef fb 61")
-    md5_value = aid_random_md5(random_bytes + aid.encode())
-    a = binascii.hexlify(md5_value[0:4])
-    md5_1 = int.from_bytes(a, byteorder='little')
-    xladon.make_value_list(md5_value)
-
-    x_ladon1, x_ladon2 = xladon.ladon_1(md5_1)
-    x_ladon3, x_ladon4 = xladon.ladon_2(md5_1)
-    buffer = random_bytes + x_ladon1.to_bytes(length=8, byteorder='little') + x_ladon2.to_bytes(length=8, byteorder='little') + x_ladon3.to_bytes(length=8, byteorder='little') + x_ladon4.to_bytes(length=8, byteorder='little')
-    res = base64.b64encode(buffer).decode()
-
-    print(res)
+    print(ladon_encrypt(1674223203, 1611921764, 1233))
